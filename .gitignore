@@ -1,0 +1,4 @@
+build/
+*.pro.user
+make_icons.py
+icons/_preview.png
