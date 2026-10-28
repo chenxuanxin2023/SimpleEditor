@@ -10,6 +10,7 @@
 #include <QFontDialog>
 #include <QColorDialog>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QStatusBar>
 #include <QLabel>
 #include <QMenu>
@@ -23,6 +24,36 @@
 #include <QFile>
 #include <QTextStream>
 #include <QApplication>
+#include <QEventLoop>
+#include <QElapsedTimer>
+#include <functional>
+
+/* 生成演示用示例文档（放在 exe 目录，保证任何机器可复现）
+   注意：必须用 QString 写入，若直接 << const char* 会按 Latin-1 二次解码导致中文乱码 */
+static void writeSampleDoc(const QString &path)
+{
+    const QString demoText = QStringLiteral(
+        "简单文本编辑器（实验二）示例文档\n"
+        "本文件用于演示 SimpleEditor 的各项功能。\n"
+        "\n"
+        "第一段：SimpleEditor 支持文件的打开、保存、另存为，\n"
+        "以及剪切、复制、粘贴、撤销、重做等基本编辑操作。\n"
+        "\n"
+        "下面这一行特别长，用于演示自动换行功能：Qt 是一个跨平台的 C++ 图形用户界面应用程序框架，"
+        "它提供了丰富的控件与信号槽机制，借助 QPlainTextEdit 我们可以快速实现一个支持行号显示的"
+        "文本编辑器组件，并通过 QFileDialog、QFontDialog、QColorDialog 等标准对话框完成文件"
+        "与格式设置功能，最后通过查找与替换对话框完成文本定位与批量修改。\n"
+        "\n"
+        "短行一\n"
+        "短行二\n"
+        "查找示例：文本编辑器 文本编辑器 文本编辑器\n");
+    QFile f(path);
+    if (f.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        QTextStream ts(&f);
+        ts.setCodec("UTF-8");
+        ts << demoText;
+    }
+}
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ui(new Ui::MainWindow)
@@ -239,15 +270,19 @@ bool MainWindow::maybeSave()
 {
     if (!ui->txtEditor->document()->isModified())
         return true;
-    QMessageBox::StandardButton ret =
-        QMessageBox::warning(this, tr("简单文本编辑器"),
-                             tr("文档已被修改，尚未保存。\n是否保存更改？"),
-                             QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
-    if (ret == QMessageBox::Save)
+    /* 用自定义中文按钮（Qt 内置标准按钮在无翻译时显示英文） */
+    QMessageBox box(QMessageBox::Warning, tr("简单文本编辑器"),
+                    tr("文档已被修改，尚未保存。\n是否保存更改？"),
+                    QMessageBox::NoButton, this);
+    QPushButton *saveBtn    = box.addButton(tr("保存"),   QMessageBox::AcceptRole);
+    QPushButton *discardBtn = box.addButton(tr("不保存"), QMessageBox::DestructiveRole);
+    box.addButton(tr("取消"), QMessageBox::RejectRole);
+    box.exec();
+    if (box.clickedButton() == saveBtn)
         return saveFile();
-    if (ret == QMessageBox::Discard)
+    if (box.clickedButton() == discardBtn)
         return true;
-    return false;   // Cancel 或直接关闭对话框：不关闭窗口
+    return false;   // 取消或直接关闭对话框：不关闭窗口
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -553,29 +588,7 @@ void MainWindow::shootDemo(const QString &dir)
 
     /* 生成演示用示例文档（放在 exe 目录，保证任何机器可复现） */
     const QString demoPath = QCoreApplication::applicationDirPath() + "/demo.txt";
-    {
-        const QString demoText = QStringLiteral(
-            "简单文本编辑器（实验二）示例文档\n"
-            "本文件用于演示 SimpleEditor 的各项功能。\n"
-            "\n"
-            "第一段：SimpleEditor 支持文件的打开、保存、另存为，\n"
-            "以及剪切、复制、粘贴、撤销、重做等基本编辑操作。\n"
-            "\n"
-            "下面这一行特别长，用于演示自动换行功能：Qt 是一个跨平台的 C++ 图形用户界面应用程序框架，"
-            "它提供了丰富的控件与信号槽机制，借助 QPlainTextEdit 我们可以快速实现一个支持行号显示的"
-            "文本编辑器组件，并通过 QFileDialog、QFontDialog、QColorDialog 等标准对话框完成文件"
-            "与格式设置功能，最后通过查找与替换对话框完成文本定位与批量修改。\n"
-            "\n"
-            "短行一\n"
-            "短行二\n"
-            "查找示例：文本编辑器 文本编辑器 文本编辑器\n");
-        QFile f(demoPath);
-        if (f.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
-            QTextStream ts(&f);
-            ts.setCodec("UTF-8");
-            ts << demoText;
-        }
-    }
+    writeSampleDoc(demoPath);
 
     /* 1. 打开文件 —— 主界面 */
     loadFile(demoPath);
@@ -725,4 +738,222 @@ void MainWindow::shootDemo(const QString &dir)
 
     appendVerify("=== shoot end ===");
     QApplication::quit();
+}
+
+/* ============================================================
+ * --demo 模式：按时间轴真实操作界面，供外部录屏软件采集，
+ * 用于录制"测试视频"（新建/打开/保存、未保存提示、查找替换、
+ * 撤销重做、边界场景）。每步之间保留停顿，便于观看。
+ * ============================================================ */
+void MainWindow::runLiveDemo()
+{
+    /* 录制区域固定为屏幕左上角 1600x900，便于录屏脚本精确裁切 */
+    resize(1600, 900);
+    move(0, 0);
+    QApplication::processEvents();
+
+    const QString demoPath = QCoreApplication::applicationDirPath() + QStringLiteral("/demo.txt");
+    const QString savePath = QCoreApplication::applicationDirPath() + QStringLiteral("/保存演示.txt");
+    writeSampleDoc(demoPath);
+    QFile::remove(savePath);
+    QFile::remove(QCoreApplication::applicationDirPath() + QStringLiteral("/demo_log.txt"));
+
+    typedef QPair<int, std::function<void()>> DemoStep;
+    auto q = std::make_shared<QList<DemoStep>>();
+
+    /* 1. 打开已有文件（主界面） */
+    q->append(qMakePair(400, std::function<void()>([this, demoPath]() {
+        loadFile(demoPath);
+        ui->txtEditor->moveCursor(QTextCursor::Start);
+        setStatusMessage(tr("【1/8】已打开示例文件 demo.txt"));
+    })));
+
+    /* 2. 新建文件 */
+    q->append(qMakePair(2600, std::function<void()>([this]() {
+        newFile();
+        setStatusMessage(tr("【2/8】新建文件：标题变为「无标题」，内容清空"));
+    })));
+
+    /* 3. 输入内容（分三段，模拟键入） */
+    q->append(qMakePair(1800, std::function<void()>([this]() {
+        ui->txtEditor->insertPlainText(QStringLiteral("实验二 简单文本编辑器 功能测试\n"));
+    })));
+    q->append(qMakePair(600, std::function<void()>([this]() {
+        ui->txtEditor->insertPlainText(QStringLiteral("这是一个新建的文本文件。\n"));
+    })));
+    q->append(qMakePair(600, std::function<void()>([this]() {
+        ui->txtEditor->insertPlainText(QStringLiteral("输入后标题栏出现 * 表示内容已修改未保存。\n"));
+    })));
+
+    /* 4. 保存（弹出"另存为"对话框，3.2 秒后自动确认） */
+    q->append(qMakePair(1800, std::function<void()>([this, savePath]() {
+        setStatusMessage(tr("【3/8】保存文件：弹出另存为对话框"));
+        QFileDialog fd(this);
+        fd.setAcceptMode(QFileDialog::AcceptSave);
+        fd.setWindowTitle(tr("另存为"));
+        fd.setNameFilter(tr("文本文件 (*.txt);;所有文件 (*.*)"));
+        fd.setOption(QFileDialog::DontUseNativeDialog, true);
+        fd.selectFile(savePath);
+        QEventLoop loop;
+        QObject::connect(&fd, &QDialog::finished, &loop, &QEventLoop::quit);
+        /* 3.2 秒后自动确认；6 秒兜底，确保任何情况下都不会卡死 */
+        QTimer::singleShot(3200, &fd, [&fd]() {
+            static_cast<QDialog *>(&fd)->done(QDialog::Accepted);
+        });
+        QTimer::singleShot(6000, &loop, [&loop]() { loop.quit(); });
+        fd.open();
+        loop.exec();
+        fd.hide();
+        saveFileTo(savePath);
+        setStatusMessage(tr("保存成功：标题栏的 * 消失"));
+    })));
+
+    /* 5. 再次打开文件（演示"打开"对话框） */
+    q->append(qMakePair(2000, std::function<void()>([this, demoPath]() {
+        setStatusMessage(tr("【4/8】打开文件：弹出打开对话框"));
+        QFileDialog fd(this);
+        fd.setAcceptMode(QFileDialog::AcceptOpen);
+        fd.setWindowTitle(tr("打开文件"));
+        fd.setNameFilter(tr("文本文件 (*.txt);;所有文件 (*.*)"));
+        fd.setOption(QFileDialog::DontUseNativeDialog, true);
+        fd.setDirectory(QFileInfo(demoPath).absolutePath());
+        fd.selectFile(demoPath);
+        QEventLoop loop;
+        QObject::connect(&fd, &QDialog::finished, &loop, &QEventLoop::quit);
+        QTimer::singleShot(3200, &fd, [&fd, demoPath]() {
+            fd.selectFile(demoPath);
+            static_cast<QDialog *>(&fd)->done(QDialog::Accepted);
+        });
+        QTimer::singleShot(6000, &loop, [&loop]() { loop.quit(); });
+        fd.open();
+        loop.exec();
+        fd.hide();
+        loadFile(demoPath);
+        ui->txtEditor->moveCursor(QTextCursor::Start);
+    })));
+
+    /* 6. 修改内容 → 关闭窗口 → 未保存提示 */
+    q->append(qMakePair(2000, std::function<void()>([this]() {
+        ui->txtEditor->moveCursor(QTextCursor::End);
+        ui->txtEditor->insertPlainText(QStringLiteral("\n（这一行是新增的未保存修改）"));
+        setStatusMessage(tr("【5/8】修改内容后标题出现 *，此时关闭窗口"));
+    })));
+    q->append(qMakePair(1800, std::function<void()>([this]() {
+        /* 轮询关闭提示框（相当于 Cancel，窗口不关闭），最长 9 秒兜底 */
+        QTimer *closer = new QTimer(this);
+        closer->setInterval(700);
+        QObject::connect(closer, &QTimer::timeout, closer, []() {
+            if (QWidget *w = QApplication::activeModalWidget())
+                w->close();
+        });
+        closer->start();
+        QTimer::singleShot(9000, closer, &QTimer::stop);
+        close();
+        setStatusMessage(tr("未保存提示：选择「取消」则保留窗口"));
+    })));
+
+    /* 7. 查找 */
+    q->append(qMakePair(1200, std::function<void()>([this]() {
+        setStatusMessage(tr("【6/8】查找：在查找对话框中输入「文本编辑器」"));
+        findDialog->setSearchText(QStringLiteral("文本编辑器"));
+        findDialog->show();
+        findDialog->raise();
+        ui->txtEditor->moveCursor(QTextCursor::Start);
+    })));
+    q->append(qMakePair(1600, std::function<void()>([this]() {
+        findNextRequested(QStringLiteral("文本编辑器"), false, false);
+        setStatusMessage(tr("查找命中：正文中高亮显示匹配项"));
+    })));
+
+    /* 8. 替换 */
+    q->append(qMakePair(2400, std::function<void()>([this]() {
+        findDialog->hide();
+        setStatusMessage(tr("【7/8】替换：把「文本编辑器」替换为「文本处理器」"));
+        replaceDialog->setSearchText(QStringLiteral("文本编辑器"));
+        if (QLineEdit *e = replaceDialog->findChild<QLineEdit *>(QStringLiteral("editReplace")))
+            e->setText(QStringLiteral("文本处理器"));
+        replaceDialog->show();
+        replaceDialog->raise();
+        ui->txtEditor->moveCursor(QTextCursor::Start);
+        findNextRequested(QStringLiteral("文本编辑器"), false, false);
+    })));
+    q->append(qMakePair(1600, std::function<void()>([this]() {
+        replaceRequested(QStringLiteral("文本编辑器"), QStringLiteral("文本处理器"), false);
+        setStatusMessage(tr("已替换当前一处"));
+    })));
+
+    /* 9. 撤销 / 重做 */
+    q->append(qMakePair(2200, std::function<void()>([this]() {
+        replaceDialog->hide();
+        setStatusMessage(tr("【8/8】撤销：Ctrl+Z 连续撤销 3 次"));
+    })));
+    for (int i = 0; i < 3; ++i) {
+        q->append(qMakePair(500, std::function<void()>([this]() {
+            ui->txtEditor->undo();
+        })));
+    }
+    q->append(qMakePair(1200, std::function<void()>([this]() {
+        setStatusMessage(tr("重做：Ctrl+Y 连续重做 3 次，内容恢复"));
+    })));
+    for (int i = 0; i < 3; ++i) {
+        q->append(qMakePair(500, std::function<void()>([this]() {
+            ui->txtEditor->redo();
+        })));
+    }
+
+    /* 10. 边界场景：打开不存在的文件 */
+    q->append(qMakePair(1800, std::function<void()>([this]() {
+        setStatusMessage(tr("边界场景：打开一个不存在的文件"));
+        /* 轮询关闭错误提示框，最长 9 秒兜底 */
+        QTimer *closer2 = new QTimer(this);
+        closer2->setInterval(700);
+        QObject::connect(closer2, &QTimer::timeout, closer2, []() {
+            if (QWidget *w = QApplication::activeModalWidget())
+                w->close();
+        });
+        closer2->start();
+        QTimer::singleShot(9000, closer2, &QTimer::stop);
+        loadFile(QCoreApplication::applicationDirPath() + QStringLiteral("/NoSuchFile_404.txt"));
+        setStatusMessage(tr("边界场景：提示文件不存在，原内容保持不变"));
+    })));
+
+    /* 结束 */
+    q->append(qMakePair(2500, std::function<void()>([this]() {
+        setStatusMessage(tr("演示结束"));
+        {
+            QFile lf(QCoreApplication::applicationDirPath() + QStringLiteral("/demo_log.txt"));
+            if (lf.open(QIODevice::Append | QIODevice::Text))
+                QTextStream(&lf) << "quitting\n";
+        }
+        QApplication::quit();
+    })));
+
+    /* ---- 步骤调度器：阻塞式对话框(exec)返回后继续下一步 ---- */
+    auto pump = std::make_shared<std::function<void()>>();
+    *pump = [this, q, pump]() {
+        if (q->isEmpty()) {
+            QApplication::quit();
+            return;
+        }
+        static QElapsedTimer et;
+        if (!et.isValid()) et.start();
+        const DemoStep step = q->takeFirst();
+        {
+            QFile lf(QCoreApplication::applicationDirPath() + QStringLiteral("/demo_log.txt"));
+            if (lf.open(QIODevice::Append | QIODevice::Text)) {
+                QTextStream(&lf) << "start t=" << et.elapsed() << " remain=" << q->size() << "\n";
+            }
+        }
+        QTimer::singleShot(step.first, this, [this, step, pump, &et]() {
+            step.second();
+            {
+                QFile lf(QCoreApplication::applicationDirPath() + QStringLiteral("/demo_log.txt"));
+                if (lf.open(QIODevice::Append | QIODevice::Text)) {
+                    QTextStream(&lf) << "done  t=" << et.elapsed() << "\n";
+                }
+            }
+            (*pump)();
+        });
+    };
+    (*pump)();
 }

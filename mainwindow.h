@@ -25,6 +25,9 @@ public:
     /* --shoot 模式：自动演示全部功能并截图到指定目录（用于实验报告） */
     void shootDemo(const QString &dir);
 
+    /* --demo 模式：按时间轴真实操作界面，供外部录屏（用于录制测试视频） */
+    void runLiveDemo();
+
 protected:
     void closeEvent(QCloseEvent *event) override;
 
